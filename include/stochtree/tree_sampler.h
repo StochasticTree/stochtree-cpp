@@ -221,8 +221,8 @@ class MCMCForestSampler {
   ~MCMCForestSampler() {}
   
   void SampleOneIter(ForestTracker& tracker, ForestContainer& forests, LeafModel& leaf_model, ForestDataset& dataset, 
-                     ColumnVector& residual, TreePrior& tree_prior, std::mt19937& gen, std::vector<double> variable_weights, 
-                     double global_variance, bool pre_initialized = false) {
+                     ColumnVector& residual, TreePrior& tree_prior, std::mt19937& gen, std::vector<double> variable_weights,
+                     std::vector<int32_t>& variable_split_counts, double global_variance, bool pre_initialized = false) {
     // Previous number of samples
     int prev_num_samples = forests.NumSamples();
     
@@ -255,7 +255,7 @@ class MCMCForestSampler {
       
       // Sample tree i
       tree = ensemble->GetTree(i);
-      SampleTreeOneIter(tree, tracker, forests, leaf_model, dataset, residual, tree_prior, gen, variable_weights, i, global_variance);
+      SampleTreeOneIter(tree, tracker, forests, leaf_model, dataset, residual, tree_prior, gen, variable_weights, variable_split_counts, i, global_variance);
       
       // Sample leaf parameters for tree i
       tree = ensemble->GetTree(i);
@@ -273,7 +273,9 @@ class MCMCForestSampler {
   std::minus<double> minus_op_;
   
   void SampleTreeOneIter(Tree* tree, ForestTracker& tracker, ForestContainer& forests, LeafModel& leaf_model, ForestDataset& dataset,
-                         ColumnVector& residual, TreePrior& tree_prior, std::mt19937& gen, std::vector<double> variable_weights, int tree_num, double global_variance) {
+                         ColumnVector& residual, TreePrior& tree_prior, std::mt19937& gen, std::vector<double> variable_weights, 
+                         std::vector<int32_t>& variable_split_counts,
+                         int tree_num, double global_variance) {
     // Determine whether it is possible to grow any of the leaves
     bool grow_possible = false;
     std::vector<int> leaves = tree->GetLeaves();
@@ -312,14 +314,16 @@ class MCMCForestSampler {
     bool accept;
     
     if (step_chosen == 0) {
-      GrowTreeOneIter(tree, tracker, leaf_model, dataset, residual, tree_prior, gen, tree_num, variable_weights, global_variance, prob_grow);
+      GrowTreeOneIter(tree, tracker, leaf_model, dataset, residual, tree_prior, gen, tree_num, variable_weights, variable_split_counts, global_variance, prob_grow);
     } else {
-      PruneTreeOneIter(tree, tracker, leaf_model, dataset, residual, tree_prior, gen, tree_num, global_variance);
+      PruneTreeOneIter(tree, tracker, leaf_model, dataset, residual, tree_prior, variable_split_counts, gen, tree_num, global_variance);
     }
   }
 
   void GrowTreeOneIter(Tree* tree, ForestTracker& tracker, LeafModel& leaf_model, ForestDataset& dataset, ColumnVector& residual, 
-                       TreePrior& tree_prior, std::mt19937& gen, int tree_num, std::vector<double> variable_weights, double global_variance, double prob_grow_old) {
+                       TreePrior& tree_prior, std::mt19937& gen, int tree_num, std::vector<double> variable_weights, 
+                       std::vector<int32_t>& variable_split_counts,
+                       double global_variance, double prob_grow_old) {
     // Extract dataset information
     data_size_t n = dataset.GetCovariates().rows();
     int basis_dim = 1;
@@ -340,7 +344,8 @@ class MCMCForestSampler {
     // std::fill(var_weights.begin(), var_weights.end(), 1.0/p);
     std::discrete_distribution<> var_dist(variable_weights.begin(), variable_weights.end());
     int var_chosen = var_dist(gen);
-
+    
+    
     // Determine the range of possible cutpoints
     // TODO: specialize this for binary / ordered categorical / unordered categorical variables
     double var_min, var_max;
@@ -402,6 +407,7 @@ class MCMCForestSampler {
     double log_acceptance_prob = std::log(mh_accept(gen));
     if (log_acceptance_prob <= log_mh_ratio) {
       accept = true;
+      variable_split_counts.at(var_chosen)++;
       AddSplitToModel(tracker, dataset, tree_prior, split, gen, tree, tree_num, leaf_chosen, var_chosen, false);
     } else {
       accept = false;
@@ -409,7 +415,7 @@ class MCMCForestSampler {
   }
 
   void PruneTreeOneIter(Tree* tree, ForestTracker& tracker, LeafModel& leaf_model, ForestDataset& dataset, ColumnVector& residual, 
-                        TreePrior& tree_prior, std::mt19937& gen, int tree_num, double global_variance) {
+                        TreePrior& tree_prior, std::vector<int32_t>& variable_split_counts, std::mt19937& gen, int tree_num, double global_variance) {
     // Choose a "leaf parent" node at random
     int num_leaves = tree->NumLeaves();
     int num_leaf_parents = tree->NumLeafParents();
@@ -477,6 +483,7 @@ class MCMCForestSampler {
     double log_acceptance_prob = std::log(mh_accept(gen));
     if (log_acceptance_prob <= log_mh_ratio) {
       accept = true;
+      variable_split_counts.at(feature_split)--;
       RemoveSplitFromModel(tracker, dataset, tree_prior, gen, tree, tree_num, leaf_parent_chosen, left_node, right_node, false);
     } else {
       accept = false;
